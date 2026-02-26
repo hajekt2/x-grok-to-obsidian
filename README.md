@@ -15,6 +15,14 @@ Two-stage workflow:
 - `scripts/export_grok_items_capture.js` — browser capture script (run in DevTools)
 - `scripts/convert_grok_capture_to_md.py` — JSON → Markdown converter
 
+## Install from ClawHub
+
+- ClawHub: https://clawhub.com/skills/x-grok-to-obsidian
+
+```bash
+clawhub install x-grok-to-obsidian
+```
+
 ## Quick usage
 
 ### 1) Capture from X/Grok
