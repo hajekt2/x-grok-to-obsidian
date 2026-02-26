@@ -12,6 +12,8 @@
 
   const captured = new Map(); // restId -> {requestUrl, source, data}
   const seenUrls = new Set();
+  let cooldownUntilMs = 0;
+  let rateLimitHits = 0;
 
   const parseRestIdFromUrl = (u) => {
     try {
@@ -37,16 +39,35 @@
     }
   };
 
+  const setCooldownFromResponse = (res) => {
+    const reset = res.headers?.get?.('x-rate-limit-reset');
+    const now = Date.now();
+    let until = now + 15 * 60 * 1000; // fallback 15 min
+    if (reset && /^\d+$/.test(reset)) {
+      const ts = Number(reset) * 1000;
+      if (ts > now) until = ts + 5000; // +5s jitter
+    }
+    cooldownUntilMs = Math.max(cooldownUntilMs, until);
+    rateLimitHits += 1;
+    console.log(`[rate-limit] 429 hit. Cooling down until ${new Date(cooldownUntilMs).toISOString()}`);
+  };
+
   // --- intercept fetch
   const origFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const reqUrl = String(args[0]?.url || args[0] || '');
     const res = await origFetch(...args);
     try {
-      if (reqUrl.includes('/GrokConversationItemsByRestId') && !seenUrls.has(reqUrl)) {
-        seenUrls.add(reqUrl);
-        const j = await res.clone().json();
-        maybeStore(reqUrl, j, 'fetch');
+      if (reqUrl.includes('/GrokConversationItemsByRestId')) {
+        if (res.status === 429) {
+          setCooldownFromResponse(res);
+          return res;
+        }
+        if (!seenUrls.has(reqUrl)) {
+          seenUrls.add(reqUrl);
+          const j = await res.clone().json();
+          maybeStore(reqUrl, j, 'fetch');
+        }
       }
     } catch {}
     return res;
@@ -64,6 +85,19 @@
       try {
         const u = String(this.__u || '');
         if (!u.includes('/GrokConversationItemsByRestId')) return;
+        if (this.status === 429) {
+          const reset = this.getResponseHeader('x-rate-limit-reset');
+          const now = Date.now();
+          let until = now + 15 * 60 * 1000;
+          if (reset && /^\d+$/.test(reset)) {
+            const ts = Number(reset) * 1000;
+            if (ts > now) until = ts + 5000;
+          }
+          cooldownUntilMs = Math.max(cooldownUntilMs, until);
+          rateLimitHits += 1;
+          console.log(`[rate-limit] 429 hit (xhr). Cooling down until ${new Date(cooldownUntilMs).toISOString()}`);
+          return;
+        }
         if (seenUrls.has(u)) return;
         seenUrls.add(u);
         const j = JSON.parse(this.responseText);
@@ -173,6 +207,13 @@
 
       closeBlockingDialog();
 
+      // honor cooldown after 429s
+      if (Date.now() < cooldownUntilMs) {
+        const waitMs = cooldownUntilMs - Date.now();
+        console.log(`[rate-limit] waiting ${Math.ceil(waitMs/1000)}s before continuing...`);
+        await sleep(waitMs);
+      }
+
       // Prefer direct SPA navigation to avoid getting stuck in history-panel open/scroll loops.
       try {
         const u = new URL(t.URL);
@@ -207,8 +248,11 @@
       }
 
       if ((i + 1) % 50 === 0) {
-        console.log(`processed ${i + 1}/${targets.length}, captured=${captured.size}`);
+        console.log(`processed ${i + 1}/${targets.length}, captured=${captured.size}, 429_hits=${rateLimitHits}`);
       }
+
+      // pacing to reduce burst rate
+      await sleep(350);
     }
   }
 
@@ -255,6 +299,7 @@
       indexed_total: targets.length,
       captured_conversations: captured.size,
       missing_conversations: targets.length - captured.size,
+      rate_limit_hits: rateLimitHits,
       index_pass_stats: passStats,
     },
     conversations,
