@@ -6,14 +6,47 @@
     return;
   }
 
-  const INDEX_PASSES = 1;
+  const INDEX_PASSES = 8;
   const SCROLL_MAX = 340;
   const STABLE_TARGET = 24;
+  const CHECKPOINT_KEY = 'xgrok_capture_checkpoint_v1';
+  const CHECKPOINT_EVERY = 25;
 
   const captured = new Map(); // restId -> {requestUrl, source, data}
   const seenUrls = new Set();
   let cooldownUntilMs = 0;
   let rateLimitHits = 0;
+
+  const loadCheckpoint = () => {
+    try {
+      const raw = localStorage.getItem(CHECKPOINT_KEY);
+      if (!raw) return null;
+      const cp = JSON.parse(raw);
+      if (!cp || !Array.isArray(cp.captured)) return null;
+      return cp;
+    } catch {
+      return null;
+    }
+  };
+
+  const saveCheckpoint = (targets, currentIndex, pass) => {
+    try {
+      const cp = {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        pass,
+        currentIndex,
+        targets,
+        captured: [...captured.values()].map(x => ({ restId: x.restId, requestUrl: x.requestUrl, source: x.source, data: x.data })),
+        rateLimitHits,
+      };
+      localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(cp));
+    } catch {}
+  };
+
+  const clearCheckpoint = () => {
+    try { localStorage.removeItem(CHECKPOINT_KEY); } catch {}
+  };
 
   const parseRestIdFromUrl = (u) => {
     try {
@@ -141,38 +174,53 @@
   const union = new Map();
   const passStats = [];
 
-  for (let pass = 1; pass <= INDEX_PASSES; pass++) {
-    openHistory();
-    await sleep(1400);
-
-    let prev = -1;
-    let stable = 0;
-
-    for (let i = 0; i < SCROLL_MAX && stable < STABLE_TARGET; i++) {
-      const s = getScroller();
-      s.scrollTop = s.scrollHeight;
-      await sleep(280);
-
-      const nowList = collectIndex();
-      nowList.forEach(c => union.set(c.id, c));
-
-      const now = union.size;
-      if (now === prev) stable++; else stable = 0;
-      prev = now;
-
-      if (i % 50 === 0) await sleep(700);
+  const checkpoint = loadCheckpoint();
+  if (checkpoint) {
+    for (const c of (checkpoint.captured || [])) {
+      if (c?.restId) captured.set(String(c.restId), c);
     }
-
-    passStats.push({ pass, union_count: union.size });
-    console.log(`index pass ${pass}/${INDEX_PASSES}: union=${union.size}`);
-
-    // panel toggle to force redraw/reload behavior
-    openHistory(); await sleep(700);
-    openHistory(); await sleep(900);
+    rateLimitHits = checkpoint.rateLimitHits || rateLimitHits;
+    console.log(`[checkpoint] restored captured=${captured.size}`);
   }
 
-  const targets = [...union.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id)));
-  console.log('Final indexed targets:', targets.length);
+  let targets;
+  if (checkpoint?.targets?.length) {
+    targets = checkpoint.targets;
+    console.log(`[checkpoint] reusing target list: ${targets.length}`);
+  } else {
+    for (let pass = 1; pass <= INDEX_PASSES; pass++) {
+      openHistory();
+      await sleep(1400);
+
+      let prev = -1;
+      let stable = 0;
+
+      for (let i = 0; i < SCROLL_MAX && stable < STABLE_TARGET; i++) {
+        const s = getScroller();
+        s.scrollTop = s.scrollHeight;
+        await sleep(280);
+
+        const nowList = collectIndex();
+        nowList.forEach(c => union.set(c.id, c));
+
+        const now = union.size;
+        if (now === prev) stable++; else stable = 0;
+        prev = now;
+
+        if (i % 50 === 0) await sleep(700);
+      }
+
+      passStats.push({ pass, union_count: union.size });
+      console.log(`index pass ${pass}/${INDEX_PASSES}: union=${union.size}`);
+
+      // panel toggle to force redraw/reload behavior
+      openHistory(); await sleep(700);
+      openHistory(); await sleep(900);
+    }
+
+    targets = [...union.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id)));
+    console.log('Final indexed targets:', targets.length);
+  }
 
   const closeBlockingDialog = () => {
     const closeBtn = [...document.querySelectorAll('button')].find(b => {
@@ -198,10 +246,13 @@
   };
 
   // -------- PHASE 2: click-through capture with retry passes --------
-  for (let pass = 1; pass <= 3; pass++) {
+  const startPass = checkpoint?.pass && checkpoint.pass >= 1 && checkpoint.pass <= 3 ? checkpoint.pass : 1;
+  const startIndex = Number.isInteger(checkpoint?.currentIndex) ? checkpoint.currentIndex : 0;
+
+  for (let pass = startPass; pass <= 3; pass++) {
     console.log(`capture pass ${pass}/3`);
 
-    for (let i = 0; i < targets.length; i++) {
+    for (let i = (pass === startPass ? startIndex : 0); i < targets.length; i++) {
       const t = targets[i];
       if (captured.has(t.id)) continue;
 
@@ -249,6 +300,11 @@
 
       if ((i + 1) % 50 === 0) {
         console.log(`processed ${i + 1}/${targets.length}, captured=${captured.size}, 429_hits=${rateLimitHits}`);
+      }
+
+      if ((i + 1) % CHECKPOINT_EVERY === 0) {
+        saveCheckpoint(targets, i, pass);
+        console.log(`[checkpoint] saved at pass=${pass}, index=${i}, captured=${captured.size}`);
       }
 
       // pacing to reduce burst rate
@@ -300,16 +356,23 @@
       captured_conversations: captured.size,
       missing_conversations: targets.length - captured.size,
       rate_limit_hits: rateLimitHits,
+      resumed_from_checkpoint: !!checkpoint,
       index_pass_stats: passStats,
     },
     conversations,
   };
+
+  // final checkpoint save before download
+  saveCheckpoint(targets, targets.length - 1, 3);
 
   const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `grok-conversation-history-${Date.now()}.json`;
   a.click();
+
+  // completed successfully; clear resume state
+  clearCheckpoint();
 
   console.log('DONE', out.summary);
 })();
