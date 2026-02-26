@@ -6,12 +6,10 @@
     return;
   }
 
-  // v8-style aggressive history loading
-  const INDEX_PASSES = 8;
+  const INDEX_PASSES = 1;
   const SCROLL_MAX = 340;
   const STABLE_TARGET = 24;
 
-  // v11-style endpoint capture storage
   const captured = new Map(); // restId -> {requestUrl, source, data}
   const seenUrls = new Set();
 
@@ -265,7 +263,7 @@
   const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `grok-network-v13-v8history-${Date.now()}.json`;
+  a.download = `grok-conversation-history-${Date.now()}.json`;
   a.click();
 
   console.log('DONE', out.summary);
