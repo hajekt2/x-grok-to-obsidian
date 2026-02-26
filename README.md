@@ -55,7 +55,7 @@ python3 scripts/convert_grok_capture_to_md.py \
 
 ## Troubleshooting / operational notes
 
-### 1) History count is too low (e.g., ~166 only)
+### 1) History count is too low (e.g., ~166 only of 1545
 
 - Increase discovery passes in `export_grok_items_capture.js` (`INDEX_PASSES`).
 - Keep the tab focused while indexing.
