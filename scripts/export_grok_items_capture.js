@@ -142,6 +142,29 @@
   const targets = [...union.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id)));
   console.log('Final indexed targets:', targets.length);
 
+  const closeBlockingDialog = () => {
+    const closeBtn = [...document.querySelectorAll('button')].find(b => {
+      const txt = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '')).toLowerCase();
+      return /close/.test(txt);
+    });
+    const hasDialog = !!document.querySelector('[role="dialog"]');
+    if (hasDialog && closeBtn) {
+      closeBtn.click();
+      return true;
+    }
+    return false;
+  };
+
+  const waitForCaptureOrTimeout = async (restId, timeoutMs = 9000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (captured.has(restId)) return true;
+      closeBlockingDialog();
+      await sleep(250);
+    }
+    return captured.has(restId);
+  };
+
   // -------- PHASE 2: click-through capture with retry passes --------
   for (let pass = 1; pass <= 3; pass++) {
     console.log(`capture pass ${pass}/3`);
@@ -150,6 +173,7 @@
       const t = targets[i];
       if (captured.has(t.id)) continue;
 
+      closeBlockingDialog();
       openHistory();
       await sleep(500);
 
@@ -157,7 +181,7 @@
         .find(a => (a.getAttribute('href') || '').includes(t.id));
 
       if (!link) {
-        // one mini reload cycle in history list
+        // mini reload cycle in history list
         for (let j = 0; j < 60; j++) {
           const s = getScroller();
           s.scrollTop = s.scrollHeight;
@@ -167,12 +191,22 @@
           .find(a => (a.getAttribute('href') || '').includes(t.id));
       }
 
-      if (!link) continue;
+      if (!link) {
+        continue;
+      }
 
-      link.click();
-      await sleep(1500);
+      // per-conversation watchdog: never block forever
+      try {
+        link.click();
+      } catch {
+        continue;
+      }
 
-      // Intentionally skip Thoughts interaction to avoid dialog-related stalls.
+      const ok = await waitForCaptureOrTimeout(t.id, 9000);
+      if (!ok) {
+        // not captured in time; continue, later passes may still capture it
+        console.log(`timeout ${t.id} (will retry in next pass)`);
+      }
 
       if ((i + 1) % 50 === 0) {
         console.log(`processed ${i + 1}/${targets.length}, captured=${captured.size}`);
