@@ -165,12 +165,7 @@
       link.click();
       await sleep(1500);
 
-      const thoughts = [...document.querySelectorAll('button')].find(b => /thoughts/i.test((b.textContent || '').trim()));
-      if (thoughts) {
-        thoughts.click();
-        await sleep(250);
-        thoughts.click();
-      }
+      // Intentionally skip Thoughts interaction to avoid modal/panel hangs during long runs.
 
       if ((i + 1) % 50 === 0) {
         console.log(`processed ${i + 1}/${targets.length}, captured=${captured.size}`);
