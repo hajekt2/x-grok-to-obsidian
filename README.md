@@ -45,6 +45,37 @@ python3 scripts/convert_grok_capture_to_md.py \
 - X history loading is lazy; multi-pass discovery improves completeness.
 - This project intentionally avoids shipping personal data and auth artifacts.
 
+## Troubleshooting / operational notes
+
+### 1) History count is too low (e.g., ~166 only)
+
+- Increase discovery passes in `export_grok_items_capture.js` (`INDEX_PASSES`).
+- Keep the tab focused while indexing.
+- Re-run once; X history rendering is inconsistent and can return different visible subsets between runs.
+
+### 2) Script hangs during capture loop
+
+- The script uses per-conversation timeout watchdogs to avoid infinite waits.
+- If a specific chat times out, it is retried in later passes.
+- Blocking dialogs are auto-closed during waits.
+
+### 3) 429 Too Many Requests after many conversations
+
+- X GraphQL endpoint can rate-limit around large runs.
+- Script reads `x-rate-limit-reset`, enters cooldown, then resumes automatically.
+- The script also applies pacing between requests to reduce burst pressure.
+
+### 4) Browser/tab crashes or script interrupted
+
+- Capture script writes checkpoints into `localStorage`.
+- Re-running in the same browser profile/session resumes from checkpoint state (targets + captured data + position).
+- On successful completion, checkpoint state is cleared.
+
+### 5) Indexed conversations > captured conversations
+
+- Some items may still fail capture due to transient network issues/rate-limits.
+- Re-run capture; checkpoint + retries usually recover most missing items.
+
 ## License
 
 MIT
