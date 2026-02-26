@@ -1,15 +1,18 @@
 (async () => {
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ---------- CONFIG ----------
+  const INDEX_PASSES = 3;      // history discovery passes
+  const CAPTURE_PASSES = 3;    // capture retries for missed conversations
+  const MAX_CHATS = null;      // null = all, or number for testing (e.g. 30)
+  // ----------------------------
 
   if (!location.href.includes('/i/grok')) {
     console.log('Open https://x.com/i/grok first.');
     return;
   }
 
-  const INDEX_PASSES = 8;
-  const CAPTURE_PASSES = 3;
-
-  const captured = new Map();
+  const captured = new Map(); // restId -> { requestUrl, source, data }
   const seenUrls = new Set();
 
   const parseRestIdFromUrl = (u) => {
@@ -36,7 +39,7 @@
     }
   };
 
-  // fetch/xhr intercept
+  // --- intercept fetch
   const origFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const reqUrl = String(args[0]?.url || args[0] || '');
@@ -51,6 +54,7 @@
     return res;
   };
 
+  // --- intercept XHR
   const XO = XMLHttpRequest.prototype.open;
   const XS = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open = function(method, url, ...rest) {
@@ -69,20 +73,6 @@
       } catch {}
     });
     return XS.apply(this, args);
-  };
-
-  const closeThoughtsDialogIfOpen = () => {
-    const closeBtn = [...document.querySelectorAll('button')].find(b =>
-      /close/i.test((b.getAttribute('aria-label') || '')) ||
-      /^close$/i.test((b.textContent || '').trim())
-    );
-    const hasThoughtsHeading = [...document.querySelectorAll('h1,h2,[role="heading"]')]
-      .some(h => /thoughts/i.test((h.textContent || '').trim()));
-    if (hasThoughtsHeading && closeBtn) {
-      closeBtn.click();
-      return true;
-    }
-    return false;
   };
 
   const openHistory = () => {
@@ -116,67 +106,83 @@
   };
 
   const scrollHistoryFully = async () => {
-    let stable = 0, prev = -1;
+    let stable = 0;
+    let prev = -1;
     for (let i = 0; i < 340 && stable < 24; i++) {
-      closeThoughtsDialogIfOpen();
       const s = getScroller();
       s.scrollTop = s.scrollHeight;
       await sleep(220);
       const c = collectIndex().length;
       if (c === prev) stable++; else stable = 0;
       prev = c;
-      if (i % 60 === 0) await sleep(500);
+      if (i % 60 === 0) await sleep(600);
     }
   };
 
-  // Indexing
+  // Phase 1: index union
   const union = new Map();
+  const indexStats = [];
+
   for (let pass = 1; pass <= INDEX_PASSES; pass++) {
-    closeThoughtsDialogIfOpen();
     openHistory();
     await sleep(1200);
     await scrollHistoryFully();
-    collectIndex().forEach(c => union.set(c.id, c));
-    console.log(`index pass ${pass}/${INDEX_PASSES}: ${union.size}`);
-    openHistory(); await sleep(600); openHistory(); await sleep(700);
+    const now = collectIndex();
+    now.forEach(c => union.set(c.id, c));
+    indexStats.push({ pass, count: union.size });
+    console.log(`index pass ${pass}/${INDEX_PASSES}: union=${union.size}`);
+    openHistory(); await sleep(600); openHistory(); await sleep(800);
   }
 
-  const targets = [...union.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id)));
-  console.log('targets', targets.length);
+  let targets = [...union.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id)));
+  if (typeof MAX_CHATS === 'number' && MAX_CHATS > 0) {
+    targets = targets.slice(0, MAX_CHATS);
+  }
 
-  // Capture (NO thoughts clicking)
+  console.log('Final target count:', targets.length);
+
+  // Phase 2: capture by opening conversations
   for (let pass = 1; pass <= CAPTURE_PASSES; pass++) {
     console.log(`capture pass ${pass}/${CAPTURE_PASSES}`);
     for (let i = 0; i < targets.length; i++) {
       const t = targets[i];
       if (captured.has(t.id)) continue;
 
-      closeThoughtsDialogIfOpen();
       openHistory();
       await sleep(450);
 
       let link = [...document.querySelectorAll('a[href*="/i/grok?conversation="]')]
         .find(a => (a.getAttribute('href') || '').includes(t.id));
+
       if (!link) {
         await scrollHistoryFully();
         link = [...document.querySelectorAll('a[href*="/i/grok?conversation="]')]
           .find(a => (a.getAttribute('href') || '').includes(t.id));
       }
+
       if (!link) continue;
 
       link.click();
       await sleep(1500);
 
-      // watchdog: close any dialog that appeared
-      closeThoughtsDialogIfOpen();
+      const thoughts = [...document.querySelectorAll('button')].find(b => /thoughts/i.test((b.textContent || '').trim()));
+      if (thoughts) {
+        thoughts.click();
+        await sleep(250);
+        thoughts.click();
+      }
 
-      if ((i + 1) % 50 === 0) console.log(`processed ${i+1}/${targets.length}, captured=${captured.size}`);
+      if ((i + 1) % 50 === 0) {
+        console.log(`processed ${i + 1}/${targets.length}, captured=${captured.size}`);
+      }
     }
   }
 
-  const conversations = targets.map(t => {
+  // Phase 3: normalize captured data
+  const conversations = targets.map((t) => {
     const cap = captured.get(t.id);
     if (!cap) return { id: t.id, title: t.title, URL: t.URL, error: 'not_captured' };
+
     const items = cap?.data?.data?.grok_conversation_items_by_rest_id?.items || [];
     return {
       id: t.id,
@@ -184,7 +190,7 @@
       URL: t.URL,
       source_request_url: cap.requestUrl,
       item_count: items.length,
-      items: items.map(it => ({
+      items: items.map((it) => ({
         chat_item_id: it.chat_item_id,
         sender_type: it.sender_type,
         created_at_ms: it.created_at_ms,
@@ -194,8 +200,8 @@
         cited_web_results: it.cited_web_results || [],
         web_results: it.web_results || [],
         is_partial: !!it.is_partial,
-        grok_mode: it.grok_mode || null
-      }))
+        grok_mode: it.grok_mode || null,
+      })),
     };
   });
 
@@ -206,15 +212,16 @@
       capture_passes: CAPTURE_PASSES,
       indexed_total: targets.length,
       captured_conversations: captured.size,
-      missing_conversations: targets.length - captured.size
+      missing_conversations: targets.length - captured.size,
+      index_stats: indexStats,
     },
-    conversations
+    conversations,
   };
 
   const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `grok-network-capture-v13b-${Date.now()}.json`;
+  a.download = `grok-network-capture-${Date.now()}.json`;
   a.click();
 
   console.log('DONE', out.summary);
