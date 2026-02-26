@@ -174,32 +174,32 @@
       if (captured.has(t.id)) continue;
 
       closeBlockingDialog();
-      openHistory();
-      await sleep(500);
 
-      let link = [...document.querySelectorAll('a[href*="/i/grok?conversation="]')]
-        .find(a => (a.getAttribute('href') || '').includes(t.id));
-
-      if (!link) {
-        // mini reload cycle in history list
-        for (let j = 0; j < 60; j++) {
-          const s = getScroller();
-          s.scrollTop = s.scrollHeight;
-          await sleep(180);
-        }
-        link = [...document.querySelectorAll('a[href*="/i/grok?conversation="]')]
-          .find(a => (a.getAttribute('href') || '').includes(t.id));
-      }
-
-      if (!link) {
-        continue;
-      }
-
-      // per-conversation watchdog: never block forever
+      // Prefer direct SPA navigation to avoid getting stuck in history-panel open/scroll loops.
       try {
-        link.click();
+        const u = new URL(t.URL);
+        history.pushState({}, '', `${u.pathname}${u.search}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
       } catch {
-        continue;
+        // fallback to history link click only if direct nav fails
+        openHistory();
+        await sleep(500);
+
+        let link = [...document.querySelectorAll('a[href*="/i/grok?conversation="]')]
+          .find(a => (a.getAttribute('href') || '').includes(t.id));
+
+        if (!link) {
+          for (let j = 0; j < 40; j++) {
+            const s = getScroller();
+            s.scrollTop = s.scrollHeight;
+            await sleep(160);
+          }
+          link = [...document.querySelectorAll('a[href*="/i/grok?conversation="]')]
+            .find(a => (a.getAttribute('href') || '').includes(t.id));
+        }
+
+        if (!link) continue;
+        try { link.click(); } catch { continue; }
       }
 
       const ok = await waitForCaptureOrTimeout(t.id, 9000);
