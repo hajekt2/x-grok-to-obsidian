@@ -6,7 +6,7 @@
     return;
   }
 
-  const INDEX_PASSES = 8;
+  const INDEX_PASSES = 1;
   const SCROLL_MAX = 340;
   const STABLE_TARGET = 24;
   const CHECKPOINT_KEY = 'xgrok_capture_checkpoint_v1';
